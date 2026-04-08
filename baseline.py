@@ -123,12 +123,51 @@ def _bfs_direction(ax: int, ay: int, tx: int, ty: int,
     return Direction.north
 
 
+def _bfs_dist(ax: int, ay: int, tx: int, ty: int, blocked: set) -> int:
+    """BFS distance between two points, respecting blocked cells."""
+    if ax == tx and ay == ty:
+        return 0
+    queue: deque = deque([(ax, ay, 0)])
+    visited = {(ax, ay)}
+    while queue:
+        cx, cy, d = queue.popleft()
+        for ddx, ddy in ((0, -1), (0, 1), (-1, 0), (1, 0)):
+            nx, ny = cx + ddx, cy + ddy
+            if not (0 <= nx < 10 and 0 <= ny < 10):
+                continue
+            if (nx, ny) in visited or (nx, ny) in blocked:
+                continue
+            if nx == tx and ny == ty:
+                return d + 1
+            visited.add((nx, ny))
+            queue.append((nx, ny, d + 1))
+    return 999  # unreachable
+
+
+def _donor_usefulness(obs: BloodObservation) -> dict:
+    """How many hospital units each donor blood type can satisfy."""
+    usefulness: dict = {}
+    for z in obs.zones:
+        if z.zone_type != ZoneType.hospital:
+            continue
+        for need_type, need_qty in z.needs.items():
+            if need_qty <= 0:
+                continue
+            for donor_type in COMPATIBILITY.get(need_type, []):
+                usefulness[donor_type] = usefulness.get(donor_type, 0) + need_qty
+    return usefulness
+
+
 def greedy_action(obs: BloodObservation) -> DeliveryAction:
     """
-    Priority order:
-      1. If at hospital with needs and compatible blood in inventory → deliver
-      2. If at blood source and inventory < 30% capacity → collect most-needed type
-      3. Navigate toward nearest critical/high hospital (or blood source if low)
+    Improved greedy policy:
+      1. Deliver at hospital — all compatible types, up to 50 units per step.
+      2. Collect at blood source — most-useful type first, up to 50 per step,
+         while low on inventory OR there is capacity remaining.
+      3. Navigate:
+         - If inventory >= 20% capacity: go to most urgent deliverable hospital
+           (BFS dist + dying bonus for steps_unserved >= threshold).
+         - Otherwise: go to nearest blood source.
     """
     agent = obs.agent
     ax, ay = agent.x, agent.y
@@ -141,14 +180,14 @@ def greedy_action(obs: BloodObservation) -> DeliveryAction:
     current_zone = zone_map.get(agent.current_zone_id)
     blocked = {(z.x, z.y) for z in obs.zones if z.zone_type == ZoneType.blocked}
 
-    # 1. Deliver if at hospital
+    # 1. Deliver if at hospital — sort needs by urgency-weighted quantity
     if current_zone and current_zone.zone_type == ZoneType.hospital:
-        for need_type, need_qty in current_zone.needs.items():
+        for need_type, need_qty in sorted(current_zone.needs.items(), key=lambda x: -x[1]):
             if need_qty <= 0:
                 continue
             for donor_type in COMPATIBILITY.get(need_type, []):
                 if inventory.get(donor_type, 0) > 0:
-                    qty = min(inventory[donor_type], need_qty, 20)
+                    qty = min(inventory[donor_type], need_qty, 50)
                     return DeliveryAction(
                         action_type=ActionType.deliver,
                         target_zone_id=agent.current_zone_id,
@@ -156,31 +195,29 @@ def greedy_action(obs: BloodObservation) -> DeliveryAction:
                         quantity=qty,
                     )
 
-    low_inventory = inv_total < capacity * 0.30
+    low_inventory = inv_total < capacity * 0.20
 
-    # 2. Collect if at source
+    # 2. Collect if at blood source and worthwhile
     if current_zone and current_zone.zone_type in (ZoneType.blood_bank, ZoneType.donor_center):
-        if low_inventory or cap_remaining > 20:
-            # Pick blood type most needed globally
-            need_counts: dict = {}
-            for z in obs.zones:
-                if z.zone_type == ZoneType.hospital:
-                    for bt, qty in z.needs.items():
-                        need_counts[bt] = need_counts.get(bt, 0) + qty
-
-            best_bt, best_score_val = None, -1
-            for bt, stock_qty in current_zone.stock.items():
-                if stock_qty > 0:
-                    s = need_counts.get(bt, 0)
-                    if s > best_score_val:
-                        best_score_val, best_bt = s, bt
+        if low_inventory or cap_remaining > 10:
+            usefulness = _donor_usefulness(obs)
+            best_bt, best_val = None, -1.0
+            for bt in BLOOD_TYPES:
+                stock = current_zone.stock.get(bt, 0)
+                if stock <= 0:
+                    continue
+                # Prefer types with high demand relative to what we already carry
+                val = usefulness.get(bt, 0) - inventory.get(bt, 0) * 0.5
+                if val > best_val:
+                    best_val = val
+                    best_bt = bt
             if best_bt is None:
                 for bt in BLOOD_TYPES:
                     if current_zone.stock.get(bt, 0) > 0:
                         best_bt = bt
                         break
             if best_bt:
-                qty = min(cap_remaining, current_zone.stock.get(best_bt, 0), 30)
+                qty = min(cap_remaining, current_zone.stock.get(best_bt, 0), 50)
                 if qty > 0:
                     return DeliveryAction(
                         action_type=ActionType.collect,
@@ -190,25 +227,48 @@ def greedy_action(obs: BloodObservation) -> DeliveryAction:
                     )
 
     # 3. Navigate
-    if low_inventory:
+    urgency_rank = {"critical": 0, "high": 1, "moderate": 2, "low": 3, "stable": 4}
+
+    if not low_inventory:
+        # Head to the most urgent hospital — prefer ones where we have compatible blood
+        hospitals = [
+            z for z in obs.zones
+            if z.zone_type == ZoneType.hospital and sum(z.needs.values()) > 0
+        ]
+        # Separate deliverable vs non-deliverable (go to deliverable first)
+        def _can_deliver(z: object) -> bool:
+            for nt, nq in z.needs.items():  # type: ignore[attr-defined]
+                if nq <= 0:
+                    continue
+                for dt in COMPATIBILITY.get(nt, []):
+                    if inventory.get(dt, 0) > 0:
+                        return True
+            return False
+
+        deliverable = [z for z in hospitals if _can_deliver(z)]
+        pool = deliverable if deliverable else hospitals
+
+        def _hospital_key(z: object) -> tuple:
+            dist = _bfs_dist(ax, ay, z.x, z.y, blocked)  # type: ignore[attr-defined]
+            urank = urgency_rank.get(z.urgency.value, 4)  # type: ignore[attr-defined]
+            # Dying: critical ≥ 3 steps or high ≥ 5 steps unserved → top priority
+            dying = int(
+                (z.urgency.value == "critical" and z.steps_unserved >= 3) or  # type: ignore[attr-defined]
+                (z.urgency.value == "high" and z.steps_unserved >= 5)  # type: ignore[attr-defined]
+            )
+            return (1 - dying, urank, dist)
+
+        target = min(pool, key=_hospital_key) if pool else None
+    else:
+        # Low inventory — go to nearest blood source with stock
         candidates = [
             z for z in obs.zones
             if z.zone_type in (ZoneType.blood_bank, ZoneType.donor_center)
             and sum(z.stock.values()) > 0
         ]
-        target = min(candidates, key=lambda z: abs(z.x - ax) + abs(z.y - ay)) \
+        target = min(candidates,
+                     key=lambda z: _bfs_dist(ax, ay, z.x, z.y, blocked)) \
             if candidates else None
-    else:
-        priority = sorted(
-            [z for z in obs.zones
-             if z.zone_type == ZoneType.hospital and sum(z.needs.values()) > 0],
-            key=lambda z: (
-                {"critical": 0, "high": 1, "moderate": 2, "low": 3, "stable": 4}.get(
-                    z.urgency.value, 4),
-                abs(z.x - ax) + abs(z.y - ay),
-            )
-        )
-        target = priority[0] if priority else None
 
     if target is None:
         return DeliveryAction(action_type=ActionType.wait)
