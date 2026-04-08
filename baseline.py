@@ -145,7 +145,7 @@ def _bfs_dist(ax: int, ay: int, tx: int, ty: int, blocked: set) -> int:
 
 
 def _donor_usefulness(obs: BloodObservation) -> dict:
-    """How many hospital units each donor blood type can satisfy."""
+    """How many hospital-need units each donor blood type can satisfy globally."""
     usefulness: dict = {}
     for z in obs.zones:
         if z.zone_type != ZoneType.hospital:
@@ -158,16 +158,64 @@ def _donor_usefulness(obs: BloodObservation) -> dict:
     return usefulness
 
 
+def _can_deliver_to(inventory: dict, z: object) -> bool:
+    """True if inventory has any blood compatible with z's needs."""
+    for nt, nq in z.needs.items():  # type: ignore[attr-defined]
+        if nq <= 0:
+            continue
+        for dt in COMPATIBILITY.get(nt, []):
+            if inventory.get(dt, 0) > 0:
+                return True
+    return False
+
+
+def _hospital_score(z: object, dist: int, inventory: dict) -> float:
+    """
+    Score for navigating to hospital z (higher = more urgent to visit).
+
+    urgency_val * total_need / (dist + 1)
+
+    Urgency value is boosted 5× when the hospital is already losing patients
+    (critical & steps_unserved ≥ 3, or high & steps_unserved ≥ 5), and 2×
+    when it will start losing patients before we arrive.
+    """
+    need = sum(z.needs.values())  # type: ignore[attr-defined]
+    if need == 0:
+        return 0.0
+
+    urgency = z.urgency.value  # type: ignore[attr-defined]
+    steps_unserved = z.steps_unserved  # type: ignore[attr-defined]
+
+    urgency_val = {"critical": 1000, "high": 400, "moderate": 100,
+                   "low": 30, "stable": 5}.get(urgency, 5)
+
+    # Already dying
+    dying_now = (urgency == "critical" and steps_unserved >= 3) or \
+                (urgency == "high" and steps_unserved >= 5)
+    # Will be dying when we arrive
+    dying_on_arrival = (urgency == "critical" and steps_unserved + dist >= 3) or \
+                       (urgency == "high" and steps_unserved + dist >= 5)
+
+    if dying_now:
+        urgency_val *= 5
+    elif dying_on_arrival:
+        urgency_val *= 2
+
+    return urgency_val * need / (dist + 1)
+
+
 def greedy_action(obs: BloodObservation) -> DeliveryAction:
     """
-    Improved greedy policy:
-      1. Deliver at hospital — all compatible types, up to 50 units per step.
-      2. Collect at blood source — most-useful type first, up to 50 per step,
-         while low on inventory OR there is capacity remaining.
-      3. Navigate:
-         - If inventory >= 20% capacity: go to most urgent deliverable hospital
-           (BFS dist + dying bonus for steps_unserved >= threshold).
-         - Otherwise: go to nearest blood source.
+    Triage-loop greedy policy:
+      1. Deliver at hospital — largest need first, up to 50 units per step.
+      2. Collect at blood source — most-useful type first (demand − inventory
+         penalty), up to 50 per step, while low or capacity available.
+      3. Navigate using expected-deaths scoring:
+         - Score = expected patient deaths during travel × 1000
+                 + deliverable quantity × urgency / (dist+1)
+         - Prefer deliverable hospitals; fall back to non-deliverable only if
+           nothing in inventory is compatible anywhere.
+         - Go collect when inventory < 20% OR no hospital can be helped at all.
     """
     agent = obs.agent
     ax, ay = agent.x, agent.y
@@ -180,9 +228,10 @@ def greedy_action(obs: BloodObservation) -> DeliveryAction:
     current_zone = zone_map.get(agent.current_zone_id)
     blocked = {(z.x, z.y) for z in obs.zones if z.zone_type == ZoneType.blocked}
 
-    # 1. Deliver if at hospital — sort needs by urgency-weighted quantity
+    # ── 1. Deliver at hospital ───────────────────────────────────────────────
     if current_zone and current_zone.zone_type == ZoneType.hospital:
-        for need_type, need_qty in sorted(current_zone.needs.items(), key=lambda x: -x[1]):
+        for need_type, need_qty in sorted(current_zone.needs.items(),
+                                          key=lambda x: -x[1]):
             if need_qty <= 0:
                 continue
             for donor_type in COMPATIBILITY.get(need_type, []):
@@ -197,8 +246,9 @@ def greedy_action(obs: BloodObservation) -> DeliveryAction:
 
     low_inventory = inv_total < capacity * 0.20
 
-    # 2. Collect if at blood source and worthwhile
-    if current_zone and current_zone.zone_type in (ZoneType.blood_bank, ZoneType.donor_center):
+    # ── 2. Collect at blood source ───────────────────────────────────────────
+    if current_zone and current_zone.zone_type in (ZoneType.blood_bank,
+                                                    ZoneType.donor_center):
         if low_inventory or cap_remaining > 10:
             usefulness = _donor_usefulness(obs)
             best_bt, best_val = None, -1.0
@@ -206,11 +256,10 @@ def greedy_action(obs: BloodObservation) -> DeliveryAction:
                 stock = current_zone.stock.get(bt, 0)
                 if stock <= 0:
                     continue
-                # Prefer types with high demand relative to what we already carry
+                # Favour types in high demand that we're not already over-stocked on
                 val = usefulness.get(bt, 0) - inventory.get(bt, 0) * 0.5
                 if val > best_val:
-                    best_val = val
-                    best_bt = bt
+                    best_val, best_bt = val, bt
             if best_bt is None:
                 for bt in BLOOD_TYPES:
                     if current_zone.stock.get(bt, 0) > 0:
@@ -226,49 +275,35 @@ def greedy_action(obs: BloodObservation) -> DeliveryAction:
                         quantity=qty,
                     )
 
-    # 3. Navigate
-    urgency_rank = {"critical": 0, "high": 1, "moderate": 2, "low": 3, "stable": 4}
+    # ── 3. Navigate ──────────────────────────────────────────────────────────
+    hospitals = [
+        z for z in obs.zones
+        if z.zone_type == ZoneType.hospital and sum(z.needs.values()) > 0
+    ]
 
-    if not low_inventory:
-        # Head to the most urgent hospital — prefer ones where we have compatible blood
-        hospitals = [
-            z for z in obs.zones
-            if z.zone_type == ZoneType.hospital and sum(z.needs.values()) > 0
+    # Hospitals we can actually help right now
+    deliverable = [z for z in hospitals if _can_deliver_to(inventory, z)]
+
+    need_collect = low_inventory or not deliverable
+
+    if not need_collect:
+        # Score every deliverable hospital; fall back to non-deliverable if empty
+        pool = deliverable
+        scored = [
+            (_hospital_score(z, _bfs_dist(ax, ay, z.x, z.y, blocked), inventory), z)
+            for z in pool
         ]
-        # Separate deliverable vs non-deliverable (go to deliverable first)
-        def _can_deliver(z: object) -> bool:
-            for nt, nq in z.needs.items():  # type: ignore[attr-defined]
-                if nq <= 0:
-                    continue
-                for dt in COMPATIBILITY.get(nt, []):
-                    if inventory.get(dt, 0) > 0:
-                        return True
-            return False
-
-        deliverable = [z for z in hospitals if _can_deliver(z)]
-        pool = deliverable if deliverable else hospitals
-
-        def _hospital_key(z: object) -> tuple:
-            dist = _bfs_dist(ax, ay, z.x, z.y, blocked)  # type: ignore[attr-defined]
-            urank = urgency_rank.get(z.urgency.value, 4)  # type: ignore[attr-defined]
-            # Dying: critical ≥ 3 steps or high ≥ 5 steps unserved → top priority
-            dying = int(
-                (z.urgency.value == "critical" and z.steps_unserved >= 3) or  # type: ignore[attr-defined]
-                (z.urgency.value == "high" and z.steps_unserved >= 5)  # type: ignore[attr-defined]
-            )
-            return (1 - dying, urank, dist)
-
-        target = min(pool, key=_hospital_key) if pool else None
+        target = max(scored, key=lambda t: t[0])[1] if scored else None
     else:
-        # Low inventory — go to nearest blood source with stock
-        candidates = [
+        # Go restock at the nearest blood source with useful blood
+        sources = [
             z for z in obs.zones
             if z.zone_type in (ZoneType.blood_bank, ZoneType.donor_center)
             and sum(z.stock.values()) > 0
         ]
-        target = min(candidates,
+        target = min(sources,
                      key=lambda z: _bfs_dist(ax, ay, z.x, z.y, blocked)) \
-            if candidates else None
+            if sources else None
 
     if target is None:
         return DeliveryAction(action_type=ActionType.wait)
@@ -276,7 +311,6 @@ def greedy_action(obs: BloodObservation) -> DeliveryAction:
     direction = _bfs_direction(ax, ay, target.x, target.y, blocked)
     if direction:
         return DeliveryAction(action_type=ActionType.move, direction=direction)
-
     return DeliveryAction(action_type=ActionType.wait)
 
 # ---------------------------------------------------------------------------
