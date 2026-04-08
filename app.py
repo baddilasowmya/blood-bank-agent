@@ -624,12 +624,13 @@ async def grader():
 
     score = 0.7 * (lives_pct / 100.0) + 0.15 * utilization + 0.15 * speed
     score = max(0.0001, min(0.9999, round(score, 4)))
+    lives_frac = _clamp(lives_pct / 100.0)
 
     return {
         "score": score,
-        "lives_saved_pct": _clamp(lives_pct),
+        "lives_saved_pct": lives_frac,
         "breakdown": {
-            "lives_saved_pct": _clamp(lives_pct),
+            "lives_saved_pct": lives_frac,
             "utilization": utilization,
             "speed": speed,
             "weights": {"lives_saved": 0.70, "utilization": 0.15, "speed": 0.15},
@@ -649,8 +650,8 @@ async def baseline():
         results.append({
             "task_id": task_id,
             "scenario": scenario,
-            "score": round(score, 4),
-            "lives_saved_pct": round(lives_pct, 2),
+            "score": max(0.0001, min(0.9999, round(score, 4))),
+            "lives_saved_pct": max(0.0001, min(0.9999, round(lives_pct / 100.0, 4))),
             "steps_used": steps_used,
         })
     return {"baseline_results": results}

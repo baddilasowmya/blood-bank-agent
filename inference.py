@@ -82,7 +82,7 @@ def log_step(step: int, action: dict, reward: float, obs: BloodObservation) -> N
     payload = {
         "step": step,
         "action": action,
-        "reward": round(reward, 4),
+        "reward": max(0.0001, min(0.9999, round(reward, 4))),
         "lives_saved_pct": max(0.0001, min(0.9999, round(obs.lives_saved_pct / 100.0, 4))),
         "patients_saved": obs.patients_saved,
         "patients_lost": obs.patients_lost,
@@ -432,8 +432,8 @@ async def run_task(task_id: str, scenario_name: str, seed: int) -> dict:
     return {
         "task_id": task_id,
         "scenario": scenario_name,
-        "score": score,
-        "lives_saved_pct": round(lives_pct, 2),
+        "score": max(0.0001, min(0.9999, round(score, 4))),
+        "lives_saved_pct": max(0.0001, min(0.9999, round(lives_pct / 100.0, 4))),
         "steps_used": step_count,
         "mission_success": success,
     }
