@@ -62,7 +62,7 @@ def log_step(step: int, action: dict, reward: float, obs: BloodObservation) -> N
         "step": step,
         "action": action,
         "reward": round(reward, 4),
-        "lives_saved_pct": obs.lives_saved_pct,
+        "lives_saved_pct": max(0.0001, min(0.9999, round(obs.lives_saved_pct / 100.0, 4))),
         "patients_saved": obs.patients_saved,
         "patients_lost": obs.patients_lost,
         "is_complete": obs.is_complete,
@@ -75,8 +75,8 @@ def log_end(task_id: str, score: float, lives_pct: float, steps: int,
             success: bool) -> None:
     payload = {
         "task_id": task_id,
-        "score": round(score, 4),
-        "lives_saved_pct": round(lives_pct, 2),
+        "score": max(0.0001, min(0.9999, round(score, 4))),
+        "lives_saved_pct": max(0.0001, min(0.9999, round(lives_pct / 100.0, 4))),
         "steps": steps,
         "mission_success": success,
     }
