@@ -597,7 +597,7 @@ async def tasks():
 async def grader():
     st = _env.state
     if st.get("status") == "not_initialized":
-        return {"score": 0.01, "breakdown": {}}
+        return {"score": 0.01}
 
     lives_pct = st.get("lives_saved_pct", 0.0)
     step = st.get("step", 0)
