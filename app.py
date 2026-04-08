@@ -620,12 +620,6 @@ async def grader():
 
     return {
         "score": score,
-        "breakdown": {
-            "lives_saved_pct": lives_pct,
-            "utilization": round(utilization, 4),
-            "speed": round(speed, 4),
-            "weights": {"lives_saved": 0.70, "utilization": 0.15, "speed": 0.15},
-        },
     }
 
 

@@ -41,9 +41,7 @@ from environment import (
 
 load_dotenv()
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
+
 
 API_BASE_URL: str = os.environ.get("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME: str   = os.environ.get("MODEL_NAME",   "Qwen/Qwen2.5-72B-Instruct")
@@ -56,18 +54,14 @@ TASKS = [
     ("hard",   "disaster_response"),
 ]
 
-# ---------------------------------------------------------------------------
-# LLM client
-# ---------------------------------------------------------------------------
+
 
 client = OpenAI(
     base_url=API_BASE_URL,
     api_key=HF_TOKEN or "no-key",
 )
 
-# ---------------------------------------------------------------------------
-# Structured log helpers
-# ---------------------------------------------------------------------------
+
 
 def log_start(task_id: str, scenario: str, seed: int) -> None:
     print(json.dumps({"event": "START", "task_id": task_id,
@@ -104,9 +98,7 @@ def log_end(task_id: str, score: float, lives_pct: float, steps: int,
     sys.stdout.write(f"[END] {json.dumps(payload)}\n")
     sys.stdout.flush()
 
-# ---------------------------------------------------------------------------
-# Observation → prompt
-# ---------------------------------------------------------------------------
+
 
 def _obs_to_prompt(obs: BloodObservation) -> str:
     agent = obs.agent
@@ -163,9 +155,7 @@ SYSTEM_PROMPT = (
     "Always reply with a single JSON action object and nothing else."
 )
 
-# ---------------------------------------------------------------------------
-# LLM action selection
-# ---------------------------------------------------------------------------
+
 
 def _fallback_action(obs: BloodObservation) -> DeliveryAction:
     """Simple greedy fallback used when LLM call fails."""
@@ -307,9 +297,7 @@ def _llm_action(obs: BloodObservation) -> tuple[DeliveryAction, dict]:
     fallback = _fallback_action(obs)
     return fallback, json.loads(fallback.model_dump_json())
 
-# ---------------------------------------------------------------------------
-# Score calculation
-# ---------------------------------------------------------------------------
+
 
 def _compute_score(lives_pct: float, steps_used: int, max_steps: int, capacity: int,
                    cap_remaining: int) -> float:
@@ -319,9 +307,7 @@ def _compute_score(lives_pct: float, steps_used: int, max_steps: int, capacity: 
     # Clamp strictly within (0, 1) as required by the evaluator
     return round(max(0.01, min(0.99, score)), 4)
 
-# ---------------------------------------------------------------------------
-# Run one task
-# ---------------------------------------------------------------------------
+
 
 async def run_task(task_id: str, scenario_name: str, seed: int) -> dict:
     log_start(task_id, scenario_name, seed)
@@ -352,14 +338,9 @@ async def run_task(task_id: str, scenario_name: str, seed: int) -> dict:
         "task_id": task_id,
         "scenario": scenario_name,
         "score": score,
-        "lives_saved_pct": round(lives_pct, 2),
-        "steps_used": step_count,
-        "mission_success": bool(st.get("mission_success", False)),
     }
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
+
 
 async def main() -> None:
     if not HF_TOKEN:

@@ -12,9 +12,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from pydantic import BaseModel, Field
 
 
-# ---------------------------------------------------------------------------
-# Enums
-# ---------------------------------------------------------------------------
+
 
 class ActionType(str, Enum):
     deliver = "deliver"
@@ -42,17 +40,11 @@ class ZoneType(str, Enum):
     hospital = "hospital"
     blood_bank = "blood_bank"
     donor_center = "donor_center"
-    blocked = "blocked"
-    empty = "empty"
 
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
 
 BLOOD_TYPES: List[str] = ["O+", "O-", "A+", "A-", "B+", "B-", "AB+", "AB-"]
 
-# recipient → list of compatible donor types
+
 COMPATIBILITY: Dict[str, List[str]] = {
     "O+":  ["O+", "O-"],
     "O-":  ["O-"],
@@ -73,9 +65,7 @@ URGENCY_REWARDS: Dict[str, float] = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Pydantic Models
-# ---------------------------------------------------------------------------
+
 
 class ZoneInfo(BaseModel):
     zone_id: str
@@ -132,9 +122,6 @@ class BloodObservation(BaseModel):
     mission_success: bool
 
 
-# ---------------------------------------------------------------------------
-# Scenario definitions
-# ---------------------------------------------------------------------------
 
 def _mumbai_city_shortage() -> dict:
     """Easy scenario – 70 steps."""
@@ -392,9 +379,7 @@ def get_scenario(name: str) -> dict:
     return SCENARIOS[name]
 
 
-# ---------------------------------------------------------------------------
-# BloodGrid
-# ---------------------------------------------------------------------------
+
 
 class BloodGrid:
     """10×10 grid that models zone state and agent physics."""
@@ -408,10 +393,7 @@ class BloodGrid:
         self._agent_y: int = 0
         self._build()
 
-    # ------------------------------------------------------------------
-    # Build
-    # ------------------------------------------------------------------
-
+ 
     def _build(self) -> None:
         sc = self._scenario
         ax, ay = sc["agent_start"]
@@ -467,9 +449,6 @@ class BloodGrid:
                     self._zones[zid] = z
                     self._grid[(x, y)] = zid
 
-    # ------------------------------------------------------------------
-    # Accessors
-    # ------------------------------------------------------------------
 
     def zone(self, x: int, y: int) -> Optional[ZoneInfo]:
         zid = self._grid.get((x, y))
@@ -498,9 +477,7 @@ class BloodGrid:
     def agent_pos(self) -> Tuple[int, int]:
         return self._agent_x, self._agent_y
 
-    # ------------------------------------------------------------------
-    # Movement
-    # ------------------------------------------------------------------
+
 
     def move_agent(self, direction: Direction) -> Tuple[bool, str]:
         dx, dy = 0, 0
@@ -526,9 +503,7 @@ class BloodGrid:
         zid = self._grid[(nx, ny)]
         return True, f"Moved {direction.value} to ({nx},{ny}) [{zid}]."
 
-    # ------------------------------------------------------------------
-    # Deliver
-    # ------------------------------------------------------------------
+
 
     def deliver(
         self,
@@ -593,9 +568,7 @@ class BloodGrid:
                f"+{reward:.2f} reward.")
         return reward, msg, actual
 
-    # ------------------------------------------------------------------
-    # Collect
-    # ------------------------------------------------------------------
+ 
 
     def collect(
         self,
@@ -626,9 +599,6 @@ class BloodGrid:
         zone.stock[blood_type] = available - actual
         return True, f"Collected {actual}u {blood_type} from {zone.name}.", actual
 
-    # ------------------------------------------------------------------
-    # Urgency update
-    # ------------------------------------------------------------------
 
     def _update_urgency(self, zone: ZoneInfo) -> None:
         total_need = sum(zone.needs.values())
@@ -649,9 +619,6 @@ class BloodGrid:
         else:
             zone.urgency = UrgencyLevel.stable
 
-    # ------------------------------------------------------------------
-    # Advance time
-    # ------------------------------------------------------------------
 
     def advance_time(self) -> Dict[str, float]:
         penalties: Dict[str, float] = {}
@@ -696,9 +663,7 @@ class BloodGrid:
 
         return penalties
 
-    # ------------------------------------------------------------------
-    # Stats
-    # ------------------------------------------------------------------
+
 
     def stats(self) -> dict:
         hospitals = self.hospital_zones()
@@ -715,9 +680,6 @@ class BloodGrid:
         }
 
 
-# ---------------------------------------------------------------------------
-# BloodBankEnvironment
-# ---------------------------------------------------------------------------
 
 class BloodBankEnvironment:
     """OpenEnv-compatible async RL environment for blood bank logistics."""
@@ -735,9 +697,6 @@ class BloodBankEnvironment:
         self._episode_start_step: int = 0
         self._total_reward: float = 0.0
 
-    # ------------------------------------------------------------------
-    # Reset
-    # ------------------------------------------------------------------
 
     async def reset(self) -> BloodObservation:
         sc = get_scenario(self._scenario_name)
@@ -751,9 +710,7 @@ class BloodBankEnvironment:
         self._total_reward = 0.0
         return self._obs("Environment reset. Ready to deliver blood.", 0.0, False, False)
 
-    # ------------------------------------------------------------------
-    # Step
-    # ------------------------------------------------------------------
+
 
     async def step(self, action: DeliveryAction) -> Tuple[BloodObservation, float, bool, dict]:
         if self._done:
@@ -853,9 +810,7 @@ class BloodBankEnvironment:
             "penalties": penalties,
         }
 
-    # ------------------------------------------------------------------
-    # State property
-    # ------------------------------------------------------------------
+ 
 
     @property
     def state(self) -> dict:
@@ -876,9 +831,6 @@ class BloodBankEnvironment:
             "mission_success": self._mission_success,
         }
 
-    # ------------------------------------------------------------------
-    # Observation builder
-    # ------------------------------------------------------------------
 
     def _obs(self, msg: str, reward: float, done: bool, success: bool) -> BloodObservation:
         grid = self._grid

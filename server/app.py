@@ -96,7 +96,7 @@ async def grader():
     raw_score = 0.7 * (lives_pct / 100.0) + 0.15 * utilization + 0.15 * speed
     # Clamp strictly within (0, 1) as required by the evaluator
     score = round(max(0.01, min(0.99, raw_score)), 4)
-    return {"score": score, "lives_saved_pct": lives_pct}
+    return {"score": score}
 
 
 def main(host: str = "0.0.0.0", port: int = 7860):
