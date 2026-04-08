@@ -151,6 +151,11 @@ def _obs_to_prompt(obs: BloodObservation) -> str:
         "",
         "Last action result: " + obs.last_action_result,
         "",
+        "BLOOD COMPATIBILITY (patient_need: compatible_donors):",
+        "  O-: [O-]   O+: [O+,O-]   A-: [A-,O-]   A+: [A+,A-,O+,O-]",
+        "  B-: [B-,O-]  B+: [B+,B-,O+,O-]  AB-: [AB-,A-,B-,O-]  AB+: [ANY]",
+        "  KEY: O- blood can be given to ANY patient. Prioritise collecting O-.",
+        "",
         "INSTRUCTIONS:",
         "Choose ONE action. Reply with ONLY a valid JSON object (no markdown, no explanation).",
         "Valid action_types: move | deliver | collect | wait",
@@ -161,21 +166,28 @@ def _obs_to_prompt(obs: BloodObservation) -> str:
         " \"blood_type\": \"O+\", \"quantity\": 50}",
         "  wait:    {\"action_type\": \"wait\"}",
         "",
-        "STRATEGY:",
-        "1. If at a hospital and have compatible blood → deliver (up to 50 units).",
-        "2. If at a blood source with capacity → collect the most-needed blood type.",
-        "3. Move toward the most CRITICAL hospital where you have compatible blood.",
-        "4. Go collect if inventory < 20% capacity or nothing to deliver anywhere.",
-        "Prioritise hospitals with high unserved_steps — they are actively losing patients!",
+        "STRATEGY (follow in order):",
+        "1. DELIVER: If at a hospital with needs and you have compatible blood → deliver immediately.",
+        "   - Check compatibility table: e.g. to satisfy O+ need, use O+ or O- blood.",
+        "   - Deliver up to 50 units per action. Stay and deliver multiple types if needed.",
+        "2. COLLECT: If at a blood source and capacity_remaining > 0 → collect most-needed type.",
+        "   - Fill up completely before leaving. Prefer O- (universal), then O+, then specific types.",
+        "3. MOVE to CRITICAL/HIGH hospital (unserved_steps ≥ 2) if you have compatible blood.",
+        "   - CRITICAL hospitals die after 3 unserved steps (5%/step). RUSH THERE.",
+        "   - HIGH hospitals die after 5 unserved steps (3%/step). High priority.",
+        "4. MOVE to nearest blood source if inventory < 20% OR no hospital can be helped.",
+        "NEVER wait unless no other option. Every step matters!",
     ]
 
     return "\n".join(lines)
 
 
 SYSTEM_PROMPT = (
-    "You are an expert logistics AI managing blood bank supply chains. "
-    "Your goal is to save ≥85% of patients by delivering compatible blood to hospitals "
-    "before patients die. Always reply with a single JSON action object and nothing else."
+    "You are an expert logistics AI managing blood bank supply chains in a life-or-death emergency. "
+    "Your ONLY goal is to save ≥85% of patients by delivering the right blood type to hospitals "
+    "before patients die. CRITICAL hospitals lose patients after 3 unserved steps; HIGH after 5. "
+    "O- blood is universal — it can be given to ANY patient type. "
+    "Always reply with a single valid JSON action object and NOTHING else. No explanation, no markdown."
 )
 
 # ---------------------------------------------------------------------------
