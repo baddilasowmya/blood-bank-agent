@@ -79,7 +79,43 @@ def _normalize_obs(obs: BloodObservation) -> dict:
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "project": "Blood Bank Supply Agent"}
+    return {"status": "healthy", "project": "Blood Bank Supply Agent"}
+
+
+@app.get("/metadata")
+async def metadata():
+    return {
+        "name": "blood-bank-agent",
+        "description": "Blood Bank Supply Agent: optimize blood delivery across hospitals to maximize lives saved.",
+        "version": "1.0.0",
+    }
+
+
+@app.get("/schema")
+async def schema():
+    return {
+        "action": DeliveryAction.model_json_schema(),
+        "observation": BloodObservation.model_json_schema(),
+        "state": {
+            "type": "object",
+            "properties": {
+                "scenario": {"type": "string"},
+                "step": {"type": "integer"},
+                "max_steps": {"type": "integer"},
+                "lives_saved_pct": {"type": "number"},
+                "patients_saved": {"type": "integer"},
+                "patients_lost": {"type": "integer"},
+                "capacity_remaining": {"type": "integer"},
+                "mission_success": {"type": "boolean"},
+                "status": {"type": "string"},
+            },
+        },
+    }
+
+
+@app.post("/mcp")
+async def mcp():
+    return {"jsonrpc": "2.0", "result": {"tools": []}, "id": None}
 
 
 @app.post("/reset")
