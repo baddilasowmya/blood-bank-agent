@@ -46,7 +46,9 @@ TASKS = [
     ("hard",   "disaster_response"),
 ]
 
-
+# ---------------------------------------------------------------------------
+# Structured log helpers
+# ---------------------------------------------------------------------------
 
 def log_start(task_id: str, scenario: str, seed: int) -> None:
     sys.stdout.write(
@@ -81,7 +83,9 @@ def log_end(task_id: str, score: float, lives_pct: float, steps: int,
     sys.stdout.write(f"[END] {json.dumps(payload)}\n")
     sys.stdout.flush()
 
-
+# ---------------------------------------------------------------------------
+# Greedy policy
+# ---------------------------------------------------------------------------
 
 def _bfs_direction(ax: int, ay: int, tx: int, ty: int,
                    blocked: set) -> Optional[Direction]:
@@ -109,8 +113,7 @@ def _bfs_direction(ax: int, ay: int, tx: int, ty: int,
                 return new_path[0]
             visited.add((nx, ny))
             queue.append((nx, ny, new_path))
-
-
+    # Greedy fallback
     if tx > ax:
         return Direction.east
     if tx < ax:
@@ -155,6 +158,7 @@ def greedy_action(obs: BloodObservation) -> DeliveryAction:
 
     low_inventory = inv_total < capacity * 0.30
 
+    # 2. Collect if at source
     if current_zone and current_zone.zone_type in (ZoneType.blood_bank, ZoneType.donor_center):
         if low_inventory or cap_remaining > 20:
             # Pick blood type most needed globally
@@ -185,6 +189,7 @@ def greedy_action(obs: BloodObservation) -> DeliveryAction:
                         quantity=qty,
                     )
 
+    # 3. Navigate
     if low_inventory:
         candidates = [
             z for z in obs.zones
@@ -214,7 +219,9 @@ def greedy_action(obs: BloodObservation) -> DeliveryAction:
 
     return DeliveryAction(action_type=ActionType.wait)
 
-
+# ---------------------------------------------------------------------------
+# Score calculation
+# ---------------------------------------------------------------------------
 
 def _compute_score(lives_pct: float, steps_used: int, max_steps: int,
                    capacity: int, cap_remaining: int) -> float:
@@ -224,7 +231,9 @@ def _compute_score(lives_pct: float, steps_used: int, max_steps: int,
     # Clamp strictly within (0, 1) — not 0.0 and not 1.0 — as required by the evaluator
     return round(max(0.01, min(0.99, score)), 4)
 
-
+# ---------------------------------------------------------------------------
+# Run one task
+# ---------------------------------------------------------------------------
 
 async def run_task(task_id: str, scenario_name: str, seed: int) -> dict:
     log_start(task_id, scenario_name, seed)
@@ -259,7 +268,9 @@ async def run_task(task_id: str, scenario_name: str, seed: int) -> dict:
         "mission_success": success,
     }
 
-
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 async def main() -> None:
     results = []

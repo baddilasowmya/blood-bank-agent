@@ -593,22 +593,11 @@ async def tasks():
     }
 
 
-def _clamp(value: float) -> float:
-    """Clamp a value to strictly (0, 1) — not 0.0 and not 1.0."""
-    return round(max(0.01, min(0.99, value)), 4)
-
-
 @app.get("/grader")
 async def grader():
     st = _env.state
-    if st.get("status") == "not_initialized" or st.get("step", 0) == 0:
-        # No episode has been played yet — return safe floor values
-        return {
-            "score": 0.01,
-            "lives_saved_pct": 0.01,
-            "utilization": 0.01,
-            "speed": 0.01,
-        }
+    if st.get("status") == "not_initialized":
+        return {"score": 0.01, "breakdown": {}}
 
     lives_pct = st.get("lives_saved_pct", 0.0)
     step = st.get("step", 0)
@@ -626,13 +615,17 @@ async def grader():
     speed = max(0.0, 1.0 - step / max_steps) if max_steps > 0 else 0.0
 
     raw_score = 0.7 * (lives_pct / 100.0) + 0.15 * utilization + 0.15 * speed
+    # Clamp strictly within (0, 1) as required by the evaluator
+    score = round(max(0.01, min(0.99, raw_score)), 4)
 
-    # Clamp ALL components strictly within (0, 1) as required by the evaluator
     return {
-        "score": _clamp(raw_score),
-        "lives_saved_pct": _clamp(lives_pct / 100.0),
-        "utilization": _clamp(utilization),
-        "speed": _clamp(speed),
+        "score": score,
+        "breakdown": {
+            "lives_saved_pct": lives_pct,
+            "utilization": round(utilization, 4),
+            "speed": round(speed, 4),
+            "weights": {"lives_saved": 0.70, "utilization": 0.15, "speed": 0.15},
+        },
     }
 
 
@@ -655,7 +648,9 @@ async def baseline():
     return {"baseline_results": results}
 
 
-
+# ---------------------------------------------------------------------------
+# Greedy Baseline Agent
+# ---------------------------------------------------------------------------
 
 async def _run_greedy_baseline(scenario_name: str) -> tuple:
     """Run a greedy agent and return (score, lives_pct, steps)."""

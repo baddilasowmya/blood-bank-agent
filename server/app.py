@@ -79,21 +79,11 @@ async def tasks():
     }
 
 
-def _clamp(value: float) -> float:
-    """Clamp a value to strictly (0, 1) — not 0.0 and not 1.0."""
-    return round(max(0.01, min(0.99, value)), 4)
-
-
 @app.get("/grader")
 async def grader():
     st = _env.state
-    if st.get("status") == "not_initialized" or st.get("step", 0) == 0:
-        return {
-            "score": 0.01,
-            "lives_saved_pct": 0.01,
-            "utilization": 0.01,
-            "speed": 0.01,
-        }
+    if st.get("status") == "not_initialized":
+        return {"score": 0.01}
     lives_pct = st.get("lives_saved_pct", 0.0)
     step = st.get("step", 0)
     max_steps = st.get("max_steps", 70)
@@ -104,13 +94,9 @@ async def grader():
     utilization = max(0.0, 1.0 - cap_remaining / capacity) if capacity > 0 else 0.0
     speed = max(0.0, 1.0 - step / max_steps) if max_steps > 0 else 0.0
     raw_score = 0.7 * (lives_pct / 100.0) + 0.15 * utilization + 0.15 * speed
-    # Clamp ALL components strictly within (0, 1) as required by the evaluator
-    return {
-        "score": _clamp(raw_score),
-        "lives_saved_pct": _clamp(lives_pct / 100.0),
-        "utilization": _clamp(utilization),
-        "speed": _clamp(speed),
-    }
+    # Clamp strictly within (0, 1) as required by the evaluator
+    score = round(max(0.01, min(0.99, raw_score)), 4)
+    return {"score": score, "lives_saved_pct": lives_pct}
 
 
 def main(host: str = "0.0.0.0", port: int = 7860):

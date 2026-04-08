@@ -1,19 +1,16 @@
 """
-inference.py – LLM-driven agent for the Blood Bank Supply environment.
+baseline.py – Greedy baseline agent for the Blood Bank Supply environment.
 
-Runs all three scenarios (easy / medium / hard) using an LLM to decide
-each action, and emits the required structured stdout log format:
+Runs all three scenarios using a deterministic greedy heuristic and emits
+the required structured stdout log format:
   [START] {...}
   [STEP]  {...}
   [END]   {...}
 
 Usage:
-    python inference.py
+    python baseline.py
 
-Required environment variables:
-    API_BASE_URL  – OpenAI-compatible endpoint (e.g. HuggingFace router)
-    MODEL_NAME    – Model identifier (e.g. Qwen/Qwen2.5-72B-Instruct)
-    HF_TOKEN      – HuggingFace bearer token
+No API keys required. Results are fully reproducible given the same RNG_SEED.
 """
 
 from __future__ import annotations
@@ -22,11 +19,10 @@ import asyncio
 import json
 import os
 import sys
-import re
+from collections import deque
 from typing import Optional
 
 from dotenv import load_dotenv
-from openai import OpenAI
 
 from environment import (
     BloodBankEnvironment,
@@ -37,16 +33,12 @@ from environment import (
     ZoneType,
     BLOOD_TYPES,
     COMPATIBILITY,
+    SCENARIOS,
 )
 
 load_dotenv()
 
-
-
-API_BASE_URL: str = os.environ.get("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME: str   = os.environ.get("MODEL_NAME",   "Qwen/Qwen2.5-72B-Instruct")
-HF_TOKEN: str     = os.environ.get("HF_TOKEN",     "")
-RNG_SEED: int     = int(os.environ.get("RNG_SEED",  "42"))
+RNG_SEED: int = int(os.environ.get("RNG_SEED", "42"))
 
 TASKS = [
     ("easy",   "city_shortage"),
@@ -54,21 +46,14 @@ TASKS = [
     ("hard",   "disaster_response"),
 ]
 
-
-
-client = OpenAI(
-    base_url=API_BASE_URL,
-    api_key=HF_TOKEN or "no-key",
-)
-
-
+# ---------------------------------------------------------------------------
+# Structured log helpers
+# ---------------------------------------------------------------------------
 
 def log_start(task_id: str, scenario: str, seed: int) -> None:
-    print(json.dumps({"event": "START", "task_id": task_id,
-                      "scenario": scenario, "seed": seed}),
-          flush=True)
-    # Also emit the [START] prefixed form required by the spec
-    sys.stdout.write(f"[START] {{\"task_id\": \"{task_id}\", \"scenario\": \"{scenario}\", \"seed\": {seed}}}\n")
+    sys.stdout.write(
+        f"[START] {{\"task_id\": \"{task_id}\", \"scenario\": \"{scenario}\", \"seed\": {seed}}}\n"
+    )
     sys.stdout.flush()
 
 
@@ -98,75 +83,65 @@ def log_end(task_id: str, score: float, lives_pct: float, steps: int,
     sys.stdout.write(f"[END] {json.dumps(payload)}\n")
     sys.stdout.flush()
 
+# ---------------------------------------------------------------------------
+# Greedy policy
+# ---------------------------------------------------------------------------
+
+def _bfs_direction(ax: int, ay: int, tx: int, ty: int,
+                   blocked: set) -> Optional[Direction]:
+    """BFS on 10×10 grid; returns first direction toward (tx, ty)."""
+    if ax == tx and ay == ty:
+        return None
+    dir_map = {
+        Direction.north: (0, -1),
+        Direction.south: (0, 1),
+        Direction.west:  (-1, 0),
+        Direction.east:  (1, 0),
+    }
+    queue: deque = deque([(ax, ay, [])])
+    visited = {(ax, ay)}
+    while queue:
+        cx, cy, path = queue.popleft()
+        for d, (ddx, ddy) in dir_map.items():
+            nx, ny = cx + ddx, cy + ddy
+            if not (0 <= nx < 10 and 0 <= ny < 10):
+                continue
+            if (nx, ny) in visited or (nx, ny) in blocked:
+                continue
+            new_path = path + [d]
+            if nx == tx and ny == ty:
+                return new_path[0]
+            visited.add((nx, ny))
+            queue.append((nx, ny, new_path))
+    # Greedy fallback
+    if tx > ax:
+        return Direction.east
+    if tx < ax:
+        return Direction.west
+    if ty > ay:
+        return Direction.south
+    return Direction.north
 
 
-def _obs_to_prompt(obs: BloodObservation) -> str:
-    agent = obs.agent
-    lines = [
-        f"=== Blood Bank Supply Agent – Step {obs.step_number}/{obs.max_steps} ===",
-        f"Scenario: {obs.scenario_name}",
-        f"Agent position: ({agent.x}, {agent.y})  zone={agent.current_zone_id}",
-        f"Inventory ({agent.total_units}/{agent.total_units + agent.capacity_remaining}): "
-        + ", ".join(f"{bt}:{agent.inventory.get(bt, 0)}" for bt in BLOOD_TYPES if agent.inventory.get(bt, 0) > 0),
-        f"Patients – total:{obs.total_patients}  saved:{obs.patients_saved}  lost:{obs.patients_lost}  ({obs.lives_saved_pct:.1f}% saved)",
-        "",
-        "HOSPITALS:",
-    ]
-
-    for z in obs.zones:
-        if z.zone_type == ZoneType.hospital and sum(z.needs.values()) > 0:
-            needs_str = ", ".join(f"{bt}:{qty}" for bt, qty in z.needs.items() if qty > 0)
-            lines.append(
-                f"  [{z.urgency.value.upper()}] {z.name} ({z.zone_id}) at ({z.x},{z.y}) "
-                f"needs: {needs_str}  waiting:{z.patients_waiting}"
-            )
-
-    lines += ["", "BLOOD SOURCES:"]
-    for z in obs.zones:
-        if z.zone_type in (ZoneType.blood_bank, ZoneType.donor_center):
-            stock_str = ", ".join(f"{bt}:{qty}" for bt, qty in z.stock.items() if qty > 0)
-            lines.append(
-                f"  {z.name} ({z.zone_id}) at ({z.x},{z.y})  stock: {stock_str}"
-            )
-
-    lines += [
-        "",
-        "Last action result: " + obs.last_action_result,
-        "",
-        "INSTRUCTIONS:",
-        "Choose ONE action. Reply with ONLY a valid JSON object (no markdown, no explanation).",
-        "Valid action_types: move | deliver | collect | wait",
-        "  move:    {\"action_type\": \"move\", \"direction\": \"north|south|east|west\"}",
-        "  deliver: {\"action_type\": \"deliver\", \"target_zone_id\": \"Z_x_y\", \"blood_type\": \"O+\", \"quantity\": 10}",
-        "  collect: {\"action_type\": \"collect\", \"target_zone_id\": \"Z_x_y\", \"blood_type\": \"O+\", \"quantity\": 20}",
-        "  wait:    {\"action_type\": \"wait\"}",
-        "",
-        "STRATEGY: Prioritise CRITICAL hospitals. Deliver before collecting. Move toward nearest unserved hospital.",
-        "If agent is at a hospital and has compatible blood → deliver immediately.",
-        "If inventory < 30 units → go collect from nearest blood bank / donor center.",
-    ]
-
-    return "\n".join(lines)
-
-
-SYSTEM_PROMPT = (
-    "You are an expert logistics AI managing blood bank supply chains. "
-    "Your goal is to save ≥85% of patients by delivering compatible blood to hospitals before patients die. "
-    "Always reply with a single JSON action object and nothing else."
-)
-
-
-
-def _fallback_action(obs: BloodObservation) -> DeliveryAction:
-    """Simple greedy fallback used when LLM call fails."""
+def greedy_action(obs: BloodObservation) -> DeliveryAction:
+    """
+    Priority order:
+      1. If at hospital with needs and compatible blood in inventory → deliver
+      2. If at blood source and inventory < 30% capacity → collect most-needed type
+      3. Navigate toward nearest critical/high hospital (or blood source if low)
+    """
     agent = obs.agent
     ax, ay = agent.x, agent.y
     inventory = agent.inventory
+    inv_total = agent.total_units
+    cap_remaining = agent.capacity_remaining
+    capacity = inv_total + cap_remaining
 
     zone_map = {z.zone_id: z for z in obs.zones}
     current_zone = zone_map.get(agent.current_zone_id)
+    blocked = {(z.x, z.y) for z in obs.zones if z.zone_type == ZoneType.blocked}
 
-    # Deliver if at hospital
+    # 1. Deliver if at hospital
     if current_zone and current_zone.zone_type == ZoneType.hospital:
         for need_type, need_qty in current_zone.needs.items():
             if need_qty <= 0:
@@ -181,33 +156,50 @@ def _fallback_action(obs: BloodObservation) -> DeliveryAction:
                         quantity=qty,
                     )
 
-    # Collect if at source and low
-    cap_remaining = agent.capacity_remaining
-    inv_total = agent.total_units
-    capacity = inv_total + cap_remaining
-    low_inventory = inv_total < capacity * 0.3
+    low_inventory = inv_total < capacity * 0.30
 
+    # 2. Collect if at source
     if current_zone and current_zone.zone_type in (ZoneType.blood_bank, ZoneType.donor_center):
         if low_inventory or cap_remaining > 20:
-            for bt in BLOOD_TYPES:
-                if current_zone.stock.get(bt, 0) > 0 and cap_remaining > 0:
-                    qty = min(cap_remaining, current_zone.stock[bt], 30)
+            # Pick blood type most needed globally
+            need_counts: dict = {}
+            for z in obs.zones:
+                if z.zone_type == ZoneType.hospital:
+                    for bt, qty in z.needs.items():
+                        need_counts[bt] = need_counts.get(bt, 0) + qty
+
+            best_bt, best_score_val = None, -1
+            for bt, stock_qty in current_zone.stock.items():
+                if stock_qty > 0:
+                    s = need_counts.get(bt, 0)
+                    if s > best_score_val:
+                        best_score_val, best_bt = s, bt
+            if best_bt is None:
+                for bt in BLOOD_TYPES:
+                    if current_zone.stock.get(bt, 0) > 0:
+                        best_bt = bt
+                        break
+            if best_bt:
+                qty = min(cap_remaining, current_zone.stock.get(best_bt, 0), 30)
+                if qty > 0:
                     return DeliveryAction(
                         action_type=ActionType.collect,
                         target_zone_id=agent.current_zone_id,
-                        blood_type=bt,
+                        blood_type=best_bt,
                         quantity=qty,
                     )
 
-    # Navigate
-    blocked = {(z.x, z.y) for z in obs.zones if z.zone_type == ZoneType.blocked}
-
+    # 3. Navigate
     if low_inventory:
-        candidates = [z for z in obs.zones
-                      if z.zone_type in (ZoneType.blood_bank, ZoneType.donor_center)
-                      and sum(z.stock.values()) > 0]
+        candidates = [
+            z for z in obs.zones
+            if z.zone_type in (ZoneType.blood_bank, ZoneType.donor_center)
+            and sum(z.stock.values()) > 0
+        ]
+        target = min(candidates, key=lambda z: abs(z.x - ax) + abs(z.y - ay)) \
+            if candidates else None
     else:
-        candidates = sorted(
+        priority = sorted(
             [z for z in obs.zones
              if z.zone_type == ZoneType.hospital and sum(z.needs.values()) > 0],
             key=lambda z: (
@@ -216,98 +208,32 @@ def _fallback_action(obs: BloodObservation) -> DeliveryAction:
                 abs(z.x - ax) + abs(z.y - ay),
             )
         )
+        target = priority[0] if priority else None
 
-    if not candidates:
+    if target is None:
         return DeliveryAction(action_type=ActionType.wait)
 
-    target = min(candidates, key=lambda z: abs(z.x - ax) + abs(z.y - ay))
+    direction = _bfs_direction(ax, ay, target.x, target.y, blocked)
+    if direction:
+        return DeliveryAction(action_type=ActionType.move, direction=direction)
 
-    # Simple BFS direction
-    from collections import deque
-    queue = deque([(ax, ay, [])])
-    visited = {(ax, ay)}
-    dir_map = {
-        Direction.north: (0, -1), Direction.south: (0, 1),
-        Direction.west: (-1, 0),  Direction.east:  (1, 0),
-    }
-    found_dir: Optional[Direction] = None
-    while queue and found_dir is None:
-        cx, cy, path = queue.popleft()
-        for d, (dx, dy) in dir_map.items():
-            nx, ny = cx + dx, cy + dy
-            if not (0 <= nx < 10 and 0 <= ny < 10):
-                continue
-            if (nx, ny) in visited or (nx, ny) in blocked:
-                continue
-            new_path = path + [d]
-            if nx == target.x and ny == target.y:
-                found_dir = new_path[0]
-                break
-            visited.add((nx, ny))
-            queue.append((nx, ny, new_path))
+    return DeliveryAction(action_type=ActionType.wait)
 
-    if found_dir:
-        return DeliveryAction(action_type=ActionType.move, direction=found_dir)
+# ---------------------------------------------------------------------------
+# Score calculation
+# ---------------------------------------------------------------------------
 
-    # Greedy fallback direction
-    if target.x > ax:
-        return DeliveryAction(action_type=ActionType.move, direction=Direction.east)
-    if target.x < ax:
-        return DeliveryAction(action_type=ActionType.move, direction=Direction.west)
-    if target.y > ay:
-        return DeliveryAction(action_type=ActionType.move, direction=Direction.south)
-    return DeliveryAction(action_type=ActionType.move, direction=Direction.north)
-
-
-def _parse_llm_action(text: str) -> Optional[DeliveryAction]:
-    """Parse JSON action from LLM response text."""
-    # Strip markdown fences if present
-    text = re.sub(r"```(?:json)?", "", text).strip()
-    # Extract first JSON object
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if not match:
-        return None
-    try:
-        data = json.loads(match.group())
-        return DeliveryAction(**data)
-    except Exception:
-        return None
-
-
-def _llm_action(obs: BloodObservation) -> tuple[DeliveryAction, dict]:
-    """Call LLM for next action. Returns (action, action_dict)."""
-    prompt = _obs_to_prompt(obs)
-    try:
-        response = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user",   "content": prompt},
-            ],
-            max_tokens=150,
-            temperature=0.2,
-        )
-        raw = response.choices[0].message.content or ""
-        action = _parse_llm_action(raw)
-        if action is not None:
-            return action, json.loads(action.model_dump_json())
-    except Exception as exc:
-        print(f"[WARN] LLM call failed: {exc}", file=sys.stderr)
-
-    fallback = _fallback_action(obs)
-    return fallback, json.loads(fallback.model_dump_json())
-
-
-
-def _compute_score(lives_pct: float, steps_used: int, max_steps: int, capacity: int,
-                   cap_remaining: int) -> float:
+def _compute_score(lives_pct: float, steps_used: int, max_steps: int,
+                   capacity: int, cap_remaining: int) -> float:
     utilization = max(0.0, 1.0 - cap_remaining / capacity) if capacity > 0 else 0.0
     speed = max(0.0, 1.0 - steps_used / max_steps) if max_steps > 0 else 0.0
     score = 0.7 * (lives_pct / 100.0) + 0.15 * utilization + 0.15 * speed
-    # Clamp strictly within (0, 1) as required by the evaluator
+    # Clamp strictly within (0, 1) — not 0.0 and not 1.0 — as required by the evaluator
     return round(max(0.01, min(0.99, score)), 4)
 
-
+# ---------------------------------------------------------------------------
+# Run one task
+# ---------------------------------------------------------------------------
 
 async def run_task(task_id: str, scenario_name: str, seed: int) -> dict:
     log_start(task_id, scenario_name, seed)
@@ -316,44 +242,47 @@ async def run_task(task_id: str, scenario_name: str, seed: int) -> dict:
     obs = await env.reset()
     done = False
     step_count = 0
-    total_reward = 0.0
 
     while not done:
-        action, action_dict = _llm_action(obs)
+        action = greedy_action(obs)
+        action_dict = json.loads(action.model_dump_json())
         obs, reward, done, _ = await env.step(action)
         step_count += 1
-        total_reward += reward
         log_step(step_count, action_dict, reward, obs)
 
     st = env.state
-    from environment import SCENARIOS
     capacity = SCENARIOS.get(scenario_name, {}).get("capacity", 100)
     cap_remaining = st.get("capacity_remaining", capacity)
     lives_pct = st.get("lives_saved_pct", 0.0)
     score = _compute_score(lives_pct, step_count, obs.max_steps, capacity, cap_remaining)
+    success = bool(st.get("mission_success", False))
 
-    log_end(task_id, score, lives_pct, step_count, bool(st.get("mission_success", False)))
+    log_end(task_id, score, lives_pct, step_count, success)
 
     return {
         "task_id": task_id,
         "scenario": scenario_name,
         "score": score,
+        "lives_saved_pct": round(lives_pct, 2),
+        "steps_used": step_count,
+        "mission_success": success,
     }
 
-
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 async def main() -> None:
-    if not HF_TOKEN:
-        print("[WARN] HF_TOKEN not set – requests may be rejected", file=sys.stderr)
-
     results = []
     for task_id, scenario_name in TASKS:
         result = await run_task(task_id, scenario_name, RNG_SEED)
         results.append(result)
-        print(f"[INFO] {task_id}: score={result['score']}  lives={result['lives_saved_pct']}%  "
-              f"success={result['mission_success']}", file=sys.stderr)
+        print(
+            f"[INFO] {task_id}: score={result['score']}  "
+            f"lives={result['lives_saved_pct']}%  success={result['mission_success']}",
+            file=sys.stderr,
+        )
 
-    # Final summary
     avg_score = round(sum(r["score"] for r in results) / len(results), 4)
     print(f"\n[SUMMARY] avg_score={avg_score}", file=sys.stderr)
     print(json.dumps({"summary": results, "avg_score": avg_score}), flush=True)
