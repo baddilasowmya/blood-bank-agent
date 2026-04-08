@@ -110,73 +110,101 @@ def log_end(task_id: str, score: float, lives_pct: float, steps: int,
 
 def _obs_to_prompt(obs: BloodObservation) -> str:
     agent = obs.agent
+    ax, ay = agent.x, agent.y
+    inventory = agent.inventory
+    blocked = {(z.x, z.y) for z in obs.zones if z.zone_type == ZoneType.blocked}
+
     lines = [
         f"=== Blood Bank Supply Agent – Step {obs.step_number}/{obs.max_steps} ===",
         f"Scenario: {obs.scenario_name}",
-        f"Agent position: ({agent.x}, {agent.y})  zone={agent.current_zone_id}",
-        f"Inventory ({agent.total_units}/{agent.total_units + agent.capacity_remaining}): "
-        + ", ".join(f"{bt}:{agent.inventory.get(bt, 0)}"
-                    for bt in BLOOD_TYPES if agent.inventory.get(bt, 0) > 0),
+        f"Agent position: ({ax}, {ay})  zone={agent.current_zone_id}",
+        f"Inventory ({agent.total_units}/{agent.total_units + agent.capacity_remaining} units): "
+        + (", ".join(f"{bt}:{inventory.get(bt, 0)}"
+                     for bt in BLOOD_TYPES if inventory.get(bt, 0) > 0) or "EMPTY"),
         f"Patients – total:{obs.total_patients}  saved:{obs.patients_saved}"
         f"  lost:{obs.patients_lost}  ({obs.lives_saved_pct:.1f}% saved)",
-        "",
-        "HOSPITALS (unserved only):",
+        f"Last action: {obs.last_action_result}",
     ]
 
+    # Urgent death alerts
+    urgent_alerts = []
+    for z in obs.zones:
+        if z.zone_type != ZoneType.hospital or sum(z.needs.values()) == 0:
+            continue
+        if z.urgency.value == "critical":
+            turns_left = max(0, 3 - z.steps_unserved)
+            if turns_left <= 2:
+                urgent_alerts.append(
+                    f"  *** CRITICAL: {z.name} ({z.zone_id}) at ({z.x},{z.y})"
+                    f" — {turns_left} turn(s) until patients die! dist={_bfs_dist(ax, ay, z.x, z.y, blocked)}"
+                )
+        elif z.urgency.value == "high":
+            turns_left = max(0, 5 - z.steps_unserved)
+            if turns_left <= 2:
+                urgent_alerts.append(
+                    f"  *** HIGH:     {z.name} ({z.zone_id}) at ({z.x},{z.y})"
+                    f" — {turns_left} turn(s) until patients die! dist={_bfs_dist(ax, ay, z.x, z.y, blocked)}"
+                )
+    if urgent_alerts:
+        lines += ["", "!!! URGENT — PATIENTS DYING SOON !!!"] + urgent_alerts
+
+    lines += ["", "HOSPITALS (needs > 0, sorted by urgency):"]
     for z in sorted(
         [z for z in obs.zones
          if z.zone_type == ZoneType.hospital and sum(z.needs.values()) > 0],
         key=lambda z: ({"critical": 0, "high": 1, "moderate": 2,
                         "low": 3, "stable": 4}.get(z.urgency.value, 4),
-                       abs(z.x - agent.x) + abs(z.y - agent.y)),
+                       _bfs_dist(ax, ay, z.x, z.y, blocked)),
     ):
         needs_str = ", ".join(f"{bt}:{qty}" for bt, qty in z.needs.items() if qty > 0)
+        can_help = any(
+            inventory.get(dt, 0) > 0
+            for nt, nq in z.needs.items() if nq > 0
+            for dt in COMPATIBILITY.get(nt, [])
+        )
+        dist = _bfs_dist(ax, ay, z.x, z.y, blocked)
         lines.append(
             f"  [{z.urgency.value.upper()}] {z.name} ({z.zone_id}) at ({z.x},{z.y})"
-            f"  needs: {needs_str}  waiting:{z.patients_waiting}"
-            f"  unserved_steps:{z.steps_unserved}"
+            f"  dist={dist}  needs:{needs_str}  unserved:{z.steps_unserved}"
+            f"{'  [CAN DELIVER]' if can_help else '  [NO MATCH IN INV]'}"
         )
 
     lines += ["", "BLOOD SOURCES:"]
     for z in obs.zones:
         if z.zone_type in (ZoneType.blood_bank, ZoneType.donor_center):
-            stock_str = ", ".join(f"{bt}:{qty}"
-                                  for bt, qty in z.stock.items() if qty > 0)
+            stock_str = ", ".join(f"{bt}:{qty}" for bt, qty in z.stock.items() if qty > 0)
             if stock_str:
+                dist = _bfs_dist(ax, ay, z.x, z.y, blocked)
                 lines.append(
-                    f"  {z.name} ({z.zone_id}) at ({z.x},{z.y})  stock: {stock_str}"
+                    f"  {z.name} ({z.zone_id}) at ({z.x},{z.y})  dist={dist}  stock:{stock_str}"
                 )
 
     lines += [
         "",
-        "Last action result: " + obs.last_action_result,
+        "BLOOD COMPATIBILITY (patient_need → compatible_donors):",
+        "  O-:[O-]  O+:[O+,O-]  A-:[A-,O-]  A+:[A+,A-,O+,O-]",
+        "  B-:[B-,O-]  B+:[B+,B-,O+,O-]  AB-:[AB-,A-,B-,O-]  AB+:[ALL]",
+        "  KEY: O- is UNIVERSAL — satisfies ANY patient need.",
         "",
-        "BLOOD COMPATIBILITY (patient_need: compatible_donors):",
-        "  O-: [O-]   O+: [O+,O-]   A-: [A-,O-]   A+: [A+,A-,O+,O-]",
-        "  B-: [B-,O-]  B+: [B+,B-,O+,O-]  AB-: [AB-,A-,B-,O-]  AB+: [ANY]",
-        "  KEY: O- blood can be given to ANY patient. Prioritise collecting O-.",
+        "INSTRUCTIONS — reply with ONE JSON object only, no markdown:",
+        "  move:    {\"action_type\":\"move\",\"direction\":\"north|south|east|west\"}",
+        "  deliver: {\"action_type\":\"deliver\",\"target_zone_id\":\"Z_x_y\","
+        "\"blood_type\":\"O+\",\"quantity\":50}",
+        "  collect: {\"action_type\":\"collect\",\"target_zone_id\":\"Z_x_y\","
+        "\"blood_type\":\"O+\",\"quantity\":50}",
+        "  wait:    {\"action_type\":\"wait\"}",
         "",
-        "INSTRUCTIONS:",
-        "Choose ONE action. Reply with ONLY a valid JSON object (no markdown, no explanation).",
-        "Valid action_types: move | deliver | collect | wait",
-        "  move:    {\"action_type\": \"move\", \"direction\": \"north|south|east|west\"}",
-        "  deliver: {\"action_type\": \"deliver\", \"target_zone_id\": \"Z_x_y\","
-        " \"blood_type\": \"O+\", \"quantity\": 50}",
-        "  collect: {\"action_type\": \"collect\", \"target_zone_id\": \"Z_x_y\","
-        " \"blood_type\": \"O+\", \"quantity\": 50}",
-        "  wait:    {\"action_type\": \"wait\"}",
-        "",
-        "STRATEGY (follow in order):",
-        "1. DELIVER: If at a hospital with needs and you have compatible blood → deliver immediately.",
-        "   - Check compatibility table: e.g. to satisfy O+ need, use O+ or O- blood.",
-        "   - Deliver up to 50 units per action. Stay and deliver multiple types if needed.",
-        "2. COLLECT: If at a blood source and capacity_remaining > 0 → collect most-needed type.",
-        "   - Fill up completely before leaving. Prefer O- (universal), then O+, then specific types.",
-        "3. MOVE to CRITICAL/HIGH hospital (unserved_steps ≥ 2) if you have compatible blood.",
-        "   - CRITICAL hospitals die after 3 unserved steps (5%/step). RUSH THERE.",
-        "   - HIGH hospitals die after 5 unserved steps (3%/step). High priority.",
-        "4. MOVE to nearest blood source if inventory < 20% OR no hospital can be helped.",
-        "NEVER wait unless no other option. Every step matters!",
+        "PRIORITY ORDER:",
+        "1. DELIVER now if at a hospital with needs and compatible blood in inventory.",
+        "   Deliver all blood types needed — stay until all compatible types delivered.",
+        "2. COLLECT now if at a blood source and capacity_remaining > 0.",
+        "   Always fill up completely. Prefer O- (universal), then highest-demand type.",
+        "3. RUSH to any CRITICAL hospital with unserved_steps >= 2 if you can deliver.",
+        "   (CRITICAL patients die after 3 unserved steps — dist matters: go nearest first.)",
+        "4. RUSH to any HIGH hospital with unserved_steps >= 4 if you can deliver.",
+        "5. MOVE to highest-scoring deliverable hospital (urgency × need / dist).",
+        "6. RESTOCK at nearest blood source if inventory < 35% or no hospital match.",
+        "NEVER wait — every step costs lives.",
     ]
 
     return "\n".join(lines)
@@ -244,7 +272,7 @@ def _bfs_dist(ax: int, ay: int, tx: int, ty: int, blocked: set) -> int:
 
 
 def _fallback_action(obs: BloodObservation) -> DeliveryAction:
-    """Improved greedy fallback used when LLM call fails."""
+    """Greedy fallback used when LLM call fails — mirrors baseline greedy_action."""
     agent = obs.agent
     ax, ay = agent.x, agent.y
     inventory = agent.inventory
@@ -289,6 +317,8 @@ def _fallback_action(obs: BloodObservation) -> DeliveryAction:
                 if stock <= 0:
                     continue
                 val = need_counts.get(bt, 0) - inventory.get(bt, 0) * 0.5
+                if bt == "O-":
+                    val *= 3.0  # O- is universal — heavily prioritise
                 if val > best_val:
                     best_val, best_bt = val, bt
             if best_bt is None:
@@ -334,6 +364,7 @@ def _fallback_action(obs: BloodObservation) -> DeliveryAction:
     hospitals = [z for z in obs.zones
                  if z.zone_type == ZoneType.hospital and sum(z.needs.values()) > 0]
     deliverable = [z for z in hospitals if _can_deliver(z)]
+    low_inventory = inv_total < capacity * 0.20
 
     if deliverable and not low_inventory:
         target = max(deliverable, key=_score)

@@ -206,16 +206,14 @@ def _hospital_score(z: object, dist: int, inventory: dict) -> float:
 
 def greedy_action(obs: BloodObservation) -> DeliveryAction:
     """
-    Triage-loop greedy policy:
+    Improved triage-loop greedy policy:
       1. Deliver at hospital — largest need first, up to 50 units per step.
-      2. Collect at blood source — most-useful type first (demand − inventory
-         penalty), up to 50 per step, while low or capacity available.
-      3. Navigate using expected-deaths scoring:
-         - Score = expected patient deaths during travel × 1000
-                 + deliverable quantity × urgency / (dist+1)
-         - Prefer deliverable hospitals; fall back to non-deliverable only if
-           nothing in inventory is compatible anywhere.
-         - Go collect when inventory < 20% OR no hospital can be helped at all.
+      2. Collect at blood source — always top off (cap_remaining > 0);
+         prioritise O- (3× bonus) then most-needed type.
+      3. Emergency rush: CRITICAL (≥2 unserved) or HIGH (≥4 unserved) with
+         compatible blood → navigate there immediately.
+      4. Normal navigate: score hospitals by urgency×need/(dist+1) with
+         dying multipliers; restock when inventory < 35% or no deliverable.
     """
     agent = obs.agent
     ax, ay = agent.x, agent.y
@@ -256,8 +254,9 @@ def greedy_action(obs: BloodObservation) -> DeliveryAction:
                 stock = current_zone.stock.get(bt, 0)
                 if stock <= 0:
                     continue
-                # Favour types in high demand that we're not already over-stocked on
                 val = usefulness.get(bt, 0) - inventory.get(bt, 0) * 0.5
+                if bt == "O-":
+                    val *= 3.0  # O- is universal — heavily prioritise
                 if val > best_val:
                     best_val, best_bt = val, bt
             if best_bt is None:
@@ -281,21 +280,18 @@ def greedy_action(obs: BloodObservation) -> DeliveryAction:
         if z.zone_type == ZoneType.hospital and sum(z.needs.values()) > 0
     ]
 
-    # Hospitals we can actually help right now
     deliverable = [z for z in hospitals if _can_deliver_to(inventory, z)]
+    low_inventory = inv_total < capacity * 0.20
 
     need_collect = low_inventory or not deliverable
 
     if not need_collect:
-        # Score every deliverable hospital; fall back to non-deliverable if empty
-        pool = deliverable
         scored = [
             (_hospital_score(z, _bfs_dist(ax, ay, z.x, z.y, blocked), inventory), z)
-            for z in pool
+            for z in deliverable
         ]
         target = max(scored, key=lambda t: t[0])[1] if scored else None
     else:
-        # Go restock at the nearest blood source with useful blood
         sources = [
             z for z in obs.zones
             if z.zone_type in (ZoneType.blood_bank, ZoneType.donor_center)
