@@ -82,19 +82,22 @@ async def tasks():
 @app.get("/grader")
 async def grader():
     st = _env.state
+    def _clamp(v: float) -> float:
+        return max(0.0001, min(0.9999, round(v, 4)))
+
     if st.get("status") == "not_initialized":
-        return {"score": 0.0001}
-    lives_pct = st.get("lives_saved_pct", 0.0)
+        return {"score": 0.0001, "lives_saved_pct": 0.0001}
+    from environment import SCENARIOS
+    lives_pct = max(0.0001, st.get("lives_saved_pct", 0.0))
     step = st.get("step", 0)
     max_steps = st.get("max_steps", 70)
-    from environment import SCENARIOS
     scenario = st.get("scenario", "city_shortage")
     capacity = SCENARIOS.get(scenario, {}).get("capacity", 100)
     cap_remaining = st.get("capacity_remaining", capacity)
-    utilization = max(0.0, 1.0 - cap_remaining / capacity) if capacity > 0 else 0.0
-    speed = max(0.0, 1.0 - step / max_steps) if max_steps > 0 else 0.0
+    utilization = _clamp(max(0.0, 1.0 - cap_remaining / capacity) if capacity > 0 else 0.0)
+    speed = _clamp(max(0.0, 1.0 - step / max_steps) if max_steps > 0 else 0.0)
     score = max(0.0001, min(0.9999, round(0.7 * (lives_pct / 100.0) + 0.15 * utilization + 0.15 * speed, 4)))
-    return {"score": score, "lives_saved_pct": lives_pct}
+    return {"score": score, "lives_saved_pct": _clamp(lives_pct)}
 
 
 def main(host: str = "0.0.0.0", port: int = 7860):

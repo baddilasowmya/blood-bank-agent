@@ -596,23 +596,30 @@ async def tasks():
 @app.get("/grader")
 async def grader():
     st = _env.state
-    if st.get("status") == "not_initialized":
-        return {"score": 0.0001, "breakdown": {}}
+    def _clamp(v: float) -> float:
+        return max(0.0001, min(0.9999, round(v, 4)))
 
-    lives_pct = st.get("lives_saved_pct", 0.01)
+    if st.get("status") == "not_initialized":
+        return {
+            "score": 0.0001,
+            "breakdown": {
+                "lives_saved_pct": 0.0001,
+                "utilization": 0.0001,
+                "speed": 0.0001,
+                "weights": {"lives_saved": 0.70, "utilization": 0.15, "speed": 0.15},
+            },
+        }
+
+    lives_pct = max(0.0001, st.get("lives_saved_pct", 0.0))
     step = st.get("step", 0)
     max_steps = st.get("max_steps", 70)
 
-    # Utilization: how much of capacity was actively used
-    cap_remaining = st.get("capacity_remaining", 100)
-    # infer capacity from scenario
     scenario = st.get("scenario", "city_shortage")
     sc_data = SCENARIOS.get(scenario, {})
     capacity = sc_data.get("capacity", 100)
-    utilization = max(0.0, 1.0 - cap_remaining / capacity) if capacity > 0 else 0.0
-
-    # Speed bonus
-    speed = max(0.0, 1.0 - step / max_steps) if max_steps > 0 else 0.0
+    cap_remaining = st.get("capacity_remaining", capacity)
+    utilization = _clamp(max(0.0, 1.0 - cap_remaining / capacity) if capacity > 0 else 0.0)
+    speed = _clamp(max(0.0, 1.0 - step / max_steps) if max_steps > 0 else 0.0)
 
     score = 0.7 * (lives_pct / 100.0) + 0.15 * utilization + 0.15 * speed
     score = max(0.0001, min(0.9999, round(score, 4)))
@@ -620,9 +627,9 @@ async def grader():
     return {
         "score": score,
         "breakdown": {
-            "lives_saved_pct": lives_pct,
-            "utilization": round(utilization, 4),
-            "speed": round(speed, 4),
+            "lives_saved_pct": _clamp(lives_pct),
+            "utilization": utilization,
+            "speed": speed,
             "weights": {"lives_saved": 0.70, "utilization": 0.15, "speed": 0.15},
         },
     }
