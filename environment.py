@@ -40,6 +40,8 @@ class ZoneType(str, Enum):
     hospital = "hospital"
     blood_bank = "blood_bank"
     donor_center = "donor_center"
+    empty = "empty"
+    blocked = "blocked"
 
 
 BLOOD_TYPES: List[str] = ["O+", "O-", "A+", "A-", "B+", "B-", "AB+", "AB-"]
