@@ -196,15 +196,18 @@ def _obs_to_prompt(obs: BloodObservation) -> str:
         "",
         "PRIORITY ORDER:",
         "1. DELIVER now if at a hospital with needs and compatible blood in inventory.",
-        "   Deliver all blood types needed — stay until all compatible types delivered.",
+        "   Deliver ALL compatible blood types before leaving — one type per action.",
         "2. COLLECT now if at a blood source and capacity_remaining > 0.",
-        "   Always fill up completely. Prefer O- (universal), then highest-demand type.",
+        "   Fill completely. Prioritise O- (universal, satisfies ANY need) then rarest types.",
+        "   Collect each blood type in separate steps until capacity full.",
         "3. RUSH to any CRITICAL hospital with unserved_steps >= 2 if you can deliver.",
-        "   (CRITICAL patients die after 3 unserved steps — dist matters: go nearest first.)",
+        "   (CRITICAL patients die after 3 unserved steps — go to nearest first.)",
         "4. RUSH to any HIGH hospital with unserved_steps >= 4 if you can deliver.",
         "5. MOVE to highest-scoring deliverable hospital (urgency × need / dist).",
-        "6. RESTOCK at nearest blood source if inventory < 35% or no hospital match.",
+        "6. RESTOCK at nearest blood source if inventory < 20% or no hospital match.",
         "NEVER wait — every step costs lives.",
+        "PLAN ROUTES: after delivering to one hospital, check if nearby hospitals also need blood",
+        "before returning to restock — serve multiple hospitals per trip when possible.",
     ]
 
     return "\n".join(lines)
@@ -318,7 +321,7 @@ def _fallback_action(obs: BloodObservation) -> DeliveryAction:
                     continue
                 val = need_counts.get(bt, 0) - inventory.get(bt, 0) * 0.5
                 if bt == "O-":
-                    val *= 3.0  # O- is universal — heavily prioritise
+                    val *= 3.0
                 if val > best_val:
                     best_val, best_bt = val, bt
             if best_bt is None:
