@@ -74,7 +74,7 @@ def _normalize_obs(obs: BloodObservation) -> dict:
         d["lives_saved_pct"] = _sf(d["lives_saved_pct"] / 100.0)
     if "last_reward" in d:
         d["last_reward"] = _sf(d["last_reward"])
-    return d
+    return _clamp_all(d)
 
 
 @app.get("/health")
@@ -130,7 +130,9 @@ async def reset(req: Optional[ResetRequestModel] = Body(default=None)):
 
 @app.post("/step")
 async def step(req: StepRequestModel):
-    global _last_obs
+    global _env, _last_obs
+    if _env.state.get("status") == "not_initialized":
+        _last_obs = await _env.reset()
     obs, reward, done, info = await _env.step(req.action)
     _last_obs = obs
     return {

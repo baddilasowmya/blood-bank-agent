@@ -588,7 +588,7 @@ def _normalize_obs(obs: BloodObservation) -> dict:
         d["lives_saved_pct"] = _sf(d["lives_saved_pct"] / 100.0)
     if "last_reward" in d:
         d["last_reward"] = _sf(d["last_reward"])
-    return d
+    return _clamp_all(d)
 
 
 @app.post("/reset")
@@ -603,7 +603,9 @@ async def reset(req: Optional[ResetRequest] = Body(default=None)):
 
 @app.post("/step")
 async def step(req: StepRequest):
-    global _last_obs
+    global _env, _last_obs
+    if _env.state.get("status") == "not_initialized":
+        _last_obs = await _env.reset()
     obs, reward, done, info = await _env.step(req.action)
     _last_obs = obs
     return {
@@ -695,9 +697,9 @@ async def grader():
     utilization = _clamp(max(0.0, 1.0 - cap_remaining / capacity) if capacity > 0 else 0.0)
     speed = _clamp(max(0.0, 1.0 - step / max_steps) if max_steps > 0 else 0.0)
 
-    score = 0.7 * (lives_pct / 100.0) + 0.15 * utilization + 0.15 * speed
-    score = max(0.0001, min(0.9999, round(score, 4)))
     lives_frac = _clamp(lives_pct / 100.0)
+    score = 0.7 * lives_frac + 0.15 * utilization + 0.15 * speed
+    score = max(0.0001, min(0.9999, round(score, 4)))
 
     return {
         "score": score,
