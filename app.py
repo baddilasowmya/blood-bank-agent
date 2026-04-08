@@ -597,7 +597,7 @@ async def tasks():
 async def grader():
     st = _env.state
     if st.get("status") == "not_initialized":
-        return {"score": 0.01, "breakdown": {}}
+        return {"score": 0.01}
 
     lives_pct = st.get("lives_saved_pct", 0.0)
     step = st.get("step", 0)
@@ -642,9 +642,7 @@ async def baseline():
     return {"baseline_results": results}
 
 
-# ---------------------------------------------------------------------------
-# Greedy Baseline Agent
-# ---------------------------------------------------------------------------
+
 
 async def _run_greedy_baseline(scenario_name: str) -> tuple:
     """Run a greedy agent and return (score, lives_pct, steps)."""
