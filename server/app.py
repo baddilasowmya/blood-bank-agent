@@ -84,7 +84,7 @@ async def grader():
     st = _env.state
     if st.get("status") == "not_initialized":
         return {"score": 0.01}
-    lives_pct = st.get("lives_saved_pct", 0.0)
+    lives_pct = st.get("lives_saved_pct", 0.01)
     step = st.get("step", 0)
     max_steps = st.get("max_steps", 70)
     from environment import SCENARIOS

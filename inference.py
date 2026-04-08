@@ -253,7 +253,7 @@ async def run_task(task_id: str, scenario_name: str, seed: int) -> dict:
     st = env.state
     capacity = SCENARIOS.get(scenario_name, {}).get("capacity", 100)
     cap_remaining = st.get("capacity_remaining", capacity)
-    lives_pct = st.get("lives_saved_pct", 0.0)
+    lives_pct = st.get("lives_saved_pct", 0.01)
     score = _compute_score(lives_pct, step_count, obs.max_steps, capacity, cap_remaining)
     success = bool(st.get("mission_success", False))
 
