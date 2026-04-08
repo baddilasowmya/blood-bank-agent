@@ -526,6 +526,35 @@ async def health():
     return {"status": "ok", "project": "Blood Bank Supply Agent"}
 
 
+def _sf(v: float) -> float:
+    """Clamp a float to strictly (0.0001, 0.9999)."""
+    return max(0.0001, min(0.9999, round(float(v), 4)))
+
+
+def _clamp_all(obj):
+    """Recursively clamp every float in a response object to (0.0001, 0.9999)."""
+    if isinstance(obj, float):
+        return _sf(obj)
+    if isinstance(obj, dict):
+        return {k: _clamp_all(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_clamp_all(v) for v in obj]
+    return obj
+
+
+def _normalize_obs(obs: BloodObservation) -> dict:
+    """Convert observation to dict with all floats in (0.0001, 0.9999).
+    lives_saved_pct is a percentage (0-100) so it is divided by 100 first.
+    """
+    import json as _json
+    d = _json.loads(obs.model_dump_json())
+    if "lives_saved_pct" in d:
+        d["lives_saved_pct"] = _sf(d["lives_saved_pct"] / 100.0)
+    if "last_reward" in d:
+        d["last_reward"] = _sf(d["last_reward"])
+    return d
+
+
 @app.post("/reset")
 async def reset(req: Optional[ResetRequest] = Body(default=None)):
     global _env, _last_obs
@@ -533,7 +562,7 @@ async def reset(req: Optional[ResetRequest] = Body(default=None)):
     seed = (req.seed if req and req.seed is not None else None) or 42
     _env = BloodBankEnvironment(scenario, seed)
     _last_obs = await _env.reset()
-    return _last_obs
+    return _normalize_obs(_last_obs)
 
 
 @app.post("/step")
@@ -541,12 +570,20 @@ async def step(req: StepRequest):
     global _last_obs
     obs, reward, done, info = await _env.step(req.action)
     _last_obs = obs
-    return {"observation": obs, "reward": reward, "done": done, "info": info}
+    return {
+        "observation": _normalize_obs(obs),
+        "reward": _sf(reward),
+        "done": done,
+        "info": _clamp_all(info),
+    }
 
 
 @app.get("/state")
 async def get_state():
-    return _env.state
+    st = dict(_env.state)
+    if "lives_saved_pct" in st:
+        st["lives_saved_pct"] = _sf(st["lives_saved_pct"] / 100.0)
+    return _clamp_all(st)
 
 
 @app.get("/tasks")
