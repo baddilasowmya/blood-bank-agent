@@ -602,6 +602,7 @@ async def grader():
     if st.get("status") == "not_initialized":
         return {
             "score": 0.0001,
+            "lives_saved_pct": 0.0001,
             "breakdown": {
                 "lives_saved_pct": 0.0001,
                 "utilization": 0.0001,
@@ -626,6 +627,7 @@ async def grader():
 
     return {
         "score": score,
+        "lives_saved_pct": _clamp(lives_pct),
         "breakdown": {
             "lives_saved_pct": _clamp(lives_pct),
             "utilization": utilization,

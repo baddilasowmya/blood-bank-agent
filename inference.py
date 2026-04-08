@@ -444,7 +444,7 @@ async def main() -> None:
             file=sys.stderr,
         )
 
-    avg_score = round(sum(r["score"] for r in results) / len(results), 4)
+    avg_score = max(0.0001, min(0.9999, round(sum(r["score"] for r in results) / len(results), 4)))
     print(f"\n[SUMMARY] avg_score={avg_score}", file=sys.stderr)
     print(json.dumps({"summary": results, "avg_score": avg_score}), flush=True)
 
