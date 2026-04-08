@@ -83,8 +83,8 @@ async def tasks():
 async def grader():
     st = _env.state
     if st.get("status") == "not_initialized":
-        return {"score": 0.01}
-    lives_pct = st.get("lives_saved_pct", 0.01)
+        return {"score": 0.0001}
+    lives_pct = st.get("lives_saved_pct", 0.0)
     step = st.get("step", 0)
     max_steps = st.get("max_steps", 70)
     from environment import SCENARIOS
@@ -93,9 +93,7 @@ async def grader():
     cap_remaining = st.get("capacity_remaining", capacity)
     utilization = max(0.0, 1.0 - cap_remaining / capacity) if capacity > 0 else 0.0
     speed = max(0.0, 1.0 - step / max_steps) if max_steps > 0 else 0.0
-    raw_score = 0.7 * (lives_pct / 100.0) + 0.15 * utilization + 0.15 * speed
-    # Clamp strictly within (0, 1) as required by the evaluator
-    score = round(max(0.01, min(0.99, raw_score)), 4)
+    score = max(0.0001, min(0.9999, round(0.7 * (lives_pct / 100.0) + 0.15 * utilization + 0.15 * speed, 4)))
     return {"score": score, "lives_saved_pct": lives_pct}
 
 

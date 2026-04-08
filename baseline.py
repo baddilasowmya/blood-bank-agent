@@ -228,8 +228,7 @@ def _compute_score(lives_pct: float, steps_used: int, max_steps: int,
     utilization = max(0.0, 1.0 - cap_remaining / capacity) if capacity > 0 else 0.0
     speed = max(0.0, 1.0 - steps_used / max_steps) if max_steps > 0 else 0.0
     score = 0.7 * (lives_pct / 100.0) + 0.15 * utilization + 0.15 * speed
-    # Clamp strictly within (0, 1) — not 0.0 and not 1.0 — as required by the evaluator
-    return round(max(0.01, min(0.99, score)), 4)
+    return max(0.0001, min(0.9999, round(score, 4)))
 
 # ---------------------------------------------------------------------------
 # Run one task

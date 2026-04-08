@@ -597,7 +597,7 @@ async def tasks():
 async def grader():
     st = _env.state
     if st.get("status") == "not_initialized":
-        return {"score": 0.01}
+        return {"score": 0.0001, "breakdown": {}}
 
     lives_pct = st.get("lives_saved_pct", 0.01)
     step = st.get("step", 0)
@@ -614,9 +614,8 @@ async def grader():
     # Speed bonus
     speed = max(0.0, 1.0 - step / max_steps) if max_steps > 0 else 0.0
 
-    raw_score = 0.7 * (lives_pct / 100.0) + 0.15 * utilization + 0.15 * speed
-    # Clamp strictly within (0, 1) as required by the evaluator
-    score = round(max(0.01, min(0.99, raw_score)), 4)
+    score = 0.7 * (lives_pct / 100.0) + 0.15 * utilization + 0.15 * speed
+    score = max(0.0001, min(0.9999, round(score, 4)))
 
     return {
         "score": score,
@@ -672,8 +671,7 @@ async def _run_greedy_baseline(scenario_name: str) -> tuple:
     max_steps = obs.max_steps
     speed = max(0.0, 1.0 - step_count / max_steps)
     score = 0.7 * (lives_pct / 100.0) + 0.15 * utilization + 0.15 * speed
-    # Clamp strictly within (0, 1)
-    return round(max(0.01, min(0.99, score)), 4), lives_pct, step_count
+    return max(0.0001, min(0.9999, score)), lives_pct, step_count
 
 
 def _greedy_action(obs: BloodObservation) -> DeliveryAction:
